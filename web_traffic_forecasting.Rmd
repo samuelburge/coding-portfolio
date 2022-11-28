@@ -1,0 +1,631 @@
+---
+title: \vspace{-2.0cm} \textbf{Web Traffic Forecasting}
+subtitle: Time Series Analysis
+author:
+- \small \textbf{Samuel Burge}; Writing; Statistics, M.S. (Distance);  [samuelburge\@tamu.edu](mailto:samuelburge@tamu.edu){.email}
+- \small \textbf{Shree Karimkolikuzhiyil}; Programming; Statistics, M.S. (Distance); [shreejesh\@tamu.edu](mailto:shreejesh@tamu.edu){.email}
+- \small \textbf{Max Kutschinski}; Theory; Statistics, M.S. (Distance); [mwk556\@tamu.edu](mailto:mwk556@tamu.edu){.email}
+- \small \textbf{Jackson Smith}; Analysis; Statistics, M.S. (Distance);  [jackson.t.smith\@tamu.edu](mailto:jackson.t.smith@tamu.edu){.email}
+- \small \textbf{Jingcheng Xia}; Computations; Computer Science, B.S. (On-Campus); [sixtyfour64\@tamu.edu](mailto:sixtyfour64@tamu.edu){.email}
+output:
+  pdf_document:
+    fig_width: 17
+    fig_height: 6
+    citation_package: natbib 
+    extra_dependencies: ["amsmath", "float", "booktabs"]  
+fontsize: 11pt
+bibliography: citations.bib
+
+---
+\vspace{-1.5cm}  
+---
+
+# Introduction and Motivation
+
+<!-- Introduce Your data: Explain the context and background story of your data -->
+The objective of this analysis is to forecast daily unique visitors to an academic website over a 30-day horizon. Predicting website traffic allows IT departments to manage project throughput and prioritize maintenance and enhancements to website functionality and effectively allocate web server resources. Web traffic is also a key indicator of customer growth and expansion, as well as sustaining recurring customers and ingrained growth. The details provided by web traffic throughput reports contain many metrics, including page loads, returning visitors, and unique visits, each of which conveys a different picture and set of information for an organization. As well, having a picture of expected throughput and confirming (or denying) expectations with reality allows a business to understand unexpected growth and/or unexpected decay in business development.
+
+The data contains five years of daily time series data of user visits. There are four features in the data set, which include daily counts for the number of page loads, first-time visitors, returning visitors, and unique visitors.^[A visit is defined as a stream of hits on one or more pages on the site on a given day by the same user within a 6-hour window, identified by the IP address of the specific device. Returning visitors are identified through allowed cookies on a user's device, and the total number of returning and first-time visitors is, by definition, the number of unique visitors.] An initial plot of the data shows strong seasonality and volatility, but doesn't appear to have any discernible trend or cyclical behavior. An explanation for this could be due to the nature of the website. Students would likely be the largest share of users for a website of this nature, and the seasonality seems associated with the academic calendar typically seen at academic institutions.  
+\newline
+
+<!-- Plot the data and summarize your preliminary findings: trend, cycle, volatility, etc. -->
+```{r setup, include=F, echo=F}
+# load necessary packages
+library(readr)
+library(astsa)
+library(ggplot2)
+library(gridExtra)
+library(lubridate)
+library(ggfortify) # imports autoplot() function for plotting ACF plots more easily
+library(tidyverse)
+library(forecast)
+library(fable)   # New version of the forecast package
+library(tsibble) # Temporal tbl objects for use in the tidyverse
+library(feasts)  # Necessary for the fable package
+library(fable.prophet) # package to use prophet models with fable workflow
+library(Hmisc)   # Lowess smoothing
+library(tseries) # ARMA
+library(knitr)   # Table
+library(showtext) # package to use the Latex font in plots
+library(kableExtra)
+font_add(family = "cm", regular = "computermodern.ttf")
+showtext_auto()
+
+webData = read_csv("WebTraffic.csv",
+                   skip = 1,
+                   col_names = c("Day",
+                                 "DayOfWeek",
+                                 "Date",
+                                 "PageLoads",
+                                 "UniqueVisits",
+                                 "FirstTimeVisits",
+                                 "ReturningVisits"),
+                   col_types = cols("Day" = "f",
+                                    "Date" = col_date("%m/%d/%Y")))
+
+tsData = ts(webData, start = decimal_date(as.Date("2014-09-14")), frequency = 365) # time series object
+```
+
+```{r include=F, echo=F, eval = F}
+colnames(webData)
+anyNA(webData)
+dim(webData)
+str(webData)
+summary(webData)
+```  
+
+
+```{r Fig1, echo=F}
+# Set the theme for the chart
+theme_set(theme_bw() + theme(text = element_text(family = 'cm', size = 30)))
+
+# Plot the daily count of unique page visits
+ggplot(webData, aes(Date, UniqueVisits)) +
+  geom_line(color = '#437cb5') +
+  scale_x_date(date_labels = "%Y", date_breaks = "1 year") +
+  labs(title = "Unique Page Visits Over Time", caption = "Figure 1") + 
+  ylab("Unique Visits")
+```
+
+# Modeling
+
+## SARIMA
+
+Stationarity is a common assumption underlying many time series procedures. As such, it is important to assess the level of stationarity prior to modeling and make the appropriate adjustments if necessary.
+
+@shumway describe a stationary time series as one whose properties do not depend on the time at which the series is observed. More specifically,
+
+(i) *the mean value function* $\mu_t=E(x_t)$ *is constant and does not depend on time t*
+
+(ii) *the autocovariance function* $\gamma(s,t)=cov(x_s,x_t)=E[(x_s-\mu_s)(x_t-\mu_t)]$ *depends on times s and t only though their lagged difference.* 
+
+
+The strong seasonality that is apparent in Figure 1 is indicative of non-stationarity, since seasonality will affect the value of the time series at different times. Seasonality is defined as a recurring pattern at a fixed and known frequency based on the time of the year, week, or day. Figures 2 and 3 aim to identify the type of seasonality present in the data. Figure 2 plots a subset of the first several weeks and indicates that there exists weekly seasonality, whereas Figure 3 uses locally weighted scatterplot smoothing (LOWESS) to emphasize the inherent annual seasonal behavior.  
+\newline
+
+```{r Fig2, echo= F, message=F, fig.height =5}
+# Plot the daily count of unique page visits
+ggplot(webData[1:90, ], aes(Date, UniqueVisits)) +
+  geom_line(color = '#437cb5') +
+  geom_point(color = '#437cb5') +
+  scale_x_date(date_breaks = "1 week",
+               date_minor_breaks = "1 day",
+               date_labels = '%W') +
+  labs(title = "Weekly Seasonality", caption = 'Figure 2: Sample of weekly page visits') + 
+  ylab("Unique Visits") +
+  xlab("Date")+
+  theme(axis.text.x = element_text(size = 20, angle = 90),
+        panel.grid.major.x = element_line(color = 'darkgrey'),
+        panel.grid.minor.x = element_line(color = 'lightgrey', linetype = 'dashed'))
+```
+
+
+
+```{r Fig3, echo= F, message=F, fig.height=5}
+autoplot(tsData[,"UniqueVisits"], color = '#437cb5')+
+  scale_x_continuous(breaks = seq(from = 2014, to =  2021, by = 1))+
+  stat_plsmo(color="black", span= 0.05)+  
+  labs(title = "Yearly Seasonality", caption = "Figure 3: Smoothing via Lowess") + 
+  ylab("Unique Visits")+
+  xlab("Date")
+```
+
+\newpage
+
+
+A popular approach in addressing non-stationarity due to seasonality is to eliminate these effects via seasonal differencing. The seasonal difference of a time series is the series of changes from one season to the next, which is defined (1).
+
+\begin{equation}
+  \triangledown_s x_t=x_t-x_{t-s}
+\end{equation}
+
+One challenge with the unique visits, however, is the complex seasonality. Multiple seasonal patterns exist within the time series, and the family of seasonal ARIMA(p,d,q)(P,D,Q)[s] models only allow for a single seasonal difference. In an attempt to handle the complex seasonality, and to coerce the data into a form we could use with time series packages for estimating the models, we performed a two-step seasonal differencing approach as displayed in (2) and (3) by first taking the annual difference of the time series, and then taking the weekly difference of the transformed time series from the previous step.
+
+\begin{equation}
+  \tilde{x}_t = \triangledown_{365} x_t = (1 - B^{365})x_t = (x_t - x_{t-365})
+\end{equation}
+\begin{equation}
+  x_t^* = \triangledown_7 \triangledown_{365} x_t = (1 - B^7)(1 - B^{365})x_t = (x_t - x_{t-7}) - (x_{t-365}-x_{t-372})
+\end{equation}
+
+where B is the backshift operator. Time plots of the aforementioned transformation steps are displayed in Figure 4. The series $\{ \tilde{x}_t\}$ does not appear stationary, but the series $\{x_t^*\}$ appears to be stationary with a constant mean and variance. Our approach was to treat the annually differenced time series as the input time series, and fitting various $SARIMA(p,d,q)(P,1,Q)_s$ models where the seasonal lag is the weekly difference to in effect fit models to $\{x_t^*\}$.
+\newline
+
+```{r Fig4, echo=F, message=F, fig.height=4}
+# Differencing to induce stationarity
+web = webData %>%
+  select(Date, UniqueVisits) %>%
+  mutate(weekly_lag = lag(UniqueVisits, n = 7),                     # x_{t-7}
+         annual_lag = lag(UniqueVisits, n = 365),                   # x_{t-365}
+         total_lag = lag(lag(UniqueVisits, n = 365), n = 7),        # x_{t-365-7}
+       
+         weekly_diff = UniqueVisits - lag(UniqueVisits, n = 7),     # Weekly difference
+         annual_diff = UniqueVisits - lag(UniqueVisits, n = 365),   # Annual difference
+         diff = annual_diff - lag(annual_diff, n = 7)) %>%          # Eliminates annual AND weekly seasonality
+  filter(!is.na(diff)) %>%
+  as_tsibble(index = Date)
+
+train = webData %>%
+  select(Date, UniqueVisits) %>%
+  mutate(weekly_lag = lag(UniqueVisits, n = 7),                     # x_{t-7}
+         annual_lag = lag(UniqueVisits, n = 365),                   # x_{t-365}
+         total_lag = lag(lag(UniqueVisits, n = 365), n = 7),        # x_{t-365-7}
+       
+         weekly_diff = UniqueVisits - lag(UniqueVisits, n = 7),     # Weekly difference
+         annual_diff = UniqueVisits - lag(UniqueVisits, n = 365),   # Annual difference
+         diff = annual_diff - lag(annual_diff, n = 7)) %>%          # Eliminates annual AND weekly seasonality
+  filter(!is.na(diff), Date < '2019-09-14') %>%
+  as_tsibble(index = Date)
+
+test = webData %>%
+  select(Date, UniqueVisits) %>%
+  mutate(weekly_lag = lag(UniqueVisits, n = 7),                     # x_{t-7}
+         annual_lag = lag(UniqueVisits, n = 365),                   # x_{t-365}
+         total_lag = lag(lag(UniqueVisits, n = 365), n = 7),        # x_{t-365-7}
+         
+         weekly_diff = UniqueVisits - lag(UniqueVisits, n = 7),     # Weekly difference
+         annual_diff = UniqueVisits - lag(UniqueVisits, n = 365),   # Annual difference
+         diff = annual_diff - lag(annual_diff, n = 7)) %>%          # Eliminate annual AND weekly seasonality
+  filter(!is.na(diff), Date >= '2019-09-14') %>%
+  as_tsibble(index = Date)
+
+# See the relative size of each set in comparison to total available data
+#nrow(train) / nrow(webData) # About 85% of the available data
+#nrow(test) / nrow(webData)  # About 15% of the available data
+
+# Time plots
+ggplot(train, aes(Date, UniqueVisits)) +
+  geom_line(color = '#437cb5') +
+  labs(title = "Seasonal Differencing Stages", subtitle = "Original Time Series", x = '', y = '') +
+  theme(plot.title = element_text(hjust=0.5))
+
+ggplot(train, aes(Date, annual_diff)) +
+  geom_line(color = '#437cb5') +
+  labs(subtitle = "Annual Differencing", x = '', y = '')
+
+ggplot(train, aes(Date, diff)) +
+  geom_line(color = '#437cb5') +
+  labs(subtitle = "Weekly Differencing (Of Previous Difference)", caption = 'Figure 4: Time plots of differenced series', y = '')
+```  
+
+The ACF and PACF of the differenced series $x_t^*$ are displayed in Figure 5. Neither the ACF nor the PACF seems to cut off after a certain lag, which would be indicative of an AR or MA process. Rather, both of them appear to tail off over time, making it difficult to determine specific orders for the family of $\text{SARIMA}(p,d,q)(P,1,Q)_7$ models defined in (4).
+\newline
+
+```{r Fig5, echo=F, message=F, fig.height=5}
+# ACF and PACF plots
+ggAcf(train$diff, color='#437cb5', lag.max = 365) +
+  labs(title = "ACF and PACF After Differencing") +
+  theme(plot.title = element_text(hjust=0.5))
+
+ggPacf(train$diff, color='#437cb5', lag.max = 365) +
+  labs(title="", caption = 'Figure 5: ACF and PACF')
+```
+
+<!--
+Problems with this approach:
+- high number of lags is generally not well received by models
+- moving holiday effects (date changes per year)
+- leap years
+-->
+
+\begin{equation}
+   \tilde{x}_t = \alpha + \phi_1 \tilde{x}_{t-1}+\cdot\cdot\cdot+\phi_p \tilde{x}_{t-p}+w_t+\theta_1\omega_{t-1}+\cdot\cdot\cdot+\theta_p\omega_{t-q}\\
+\end{equation}
+
+\begin{center} where $\phi_p\neq0, \theta_p\neq0,\sigma_w^2>0$, and the model is causal and invertible.\end{center}  
+
+We opted to fit a range of $\text{SARIMA}(p,d,q)(P,D,Q)_7$ models with small orders, with the final model selected based on AIC and BIC. The model selection criterion for the fitted SARIMA models is shown in the Table 1 below. All of the proposed SARIMA models are fitted using the same order of differencing to ensure that their AIC and BIC are comparable. We decided to choose the $\text{SARIMA}(1,0,2)(1,1,2)_{7}$ model as it performed best in terms of AIC and BIC. Its parameters are estimated via maximum likelihood and are displayed in (5).
+
+\begin{equation}
+  \hat{\tilde{x}}_t = 0.94\tilde{x}^{*}_{t-1}+ 0.23\tilde{x}^{*}_{t-7}+\omega_t - 0.34\omega_{t-1} - 0.25\omega_{t-2}-0.65\omega_{t-7}-0.18\omega_{t-14}
+\end{equation}
+
+```{r arma, echo=F}
+# Fit various models to the training set
+models = train %>%
+  model('Seasonal Naive' = fable::SNAIVE(annual_diff ~ lag(365)),                        # Baseline for comparison (seasonal naive model)
+        'SARIMA(0,0,1)(0,1,0)[7]' = ARIMA(annual_diff ~ 1 + pdq(0, 0, 1) + PDQ(0, 1, 0, period = 7)),
+        'SARIMA(1,0,0)(0,1,0)[7]' = ARIMA(annual_diff ~ 1 + pdq(1, 0, 0) + PDQ(0, 1, 0, period = 7)),
+        'SARIMA(1,0,1)(0,1,0)[7]' = ARIMA(annual_diff ~ 1 + pdq(1, 0, 1) + PDQ(0, 1, 0, period = 7)),
+        'SARIMA(1,0,2)(0,1,0)[7]' = ARIMA(annual_diff ~ 1 + pdq(1, 0, 2) + PDQ(0, 1, 0, period = 7)),
+        'SARIMA(1,0,2)(0,1,1)[7]' = ARIMA(annual_diff ~ 1 + pdq(1, 0, 2) + PDQ(0, 1, 1, period = 7)),
+        'SARIMA(1,0,2)(1,1,1)[7]' = ARIMA(annual_diff ~ 1 + pdq(1, 0, 2) + PDQ(1, 1, 1, period = 7)),
+        'SARIMA(1,0,2)(0,1,2)[7]' = ARIMA(annual_diff ~ 1 + pdq(1, 0, 2) + PDQ(0, 1, 2, period = 7)),
+        'SARIMA(1,0,2)(1,1,2)[7]' = ARIMA(annual_diff ~ 1 + pdq(1, 0, 2) + PDQ(1, 1, 2, period = 7)),
+        'SARIMA(1,0,2)(2,1,2)[7]' = ARIMA(annual_diff ~ 1 + pdq(1, 0, 2) + PDQ(2, 1, 2, period = 7)))
+
+
+# Retrieves the model selection criterion for the panel of ARIMA models fitted
+models %>%
+  glance() %>%
+  filter(.model != 'Seasonal Naive') %>%
+  mutate(std_err = sqrt(sigma2)) %>%
+  select(.model, -std_err, -log_lik, AIC, -AICc, BIC, -ar_roots, -ma_roots, -sigma2) %>%
+  arrange(AIC) %>%
+  kable(col.names = c('Model', 'AIC', 'BIC'),
+        digits = 2, align = c('l', 'c', 'c'),
+        caption = "Model estimation results.")%>%
+  kable_styling(font_size = 12)%>%
+  row_spec(0, bold = TRUE)
+```
+
+```{r echo = F}
+models %>%
+  select('SARIMA(1,0,2)(1,1,2)[7]') %>% report()
+```
+
+
+Figure 6 displays of plot of the residuals of the fitted $\text{SARIMA}(1,0,2)(1,1,2)_{7}$ model. Initially, the residuals seem to behave like white noise, being centered around zero with a constant variance. However, further analysis of the autocorrelation plot and formal testing using the Box-Ljung test indicate that the residuals are correlated (i.e., they are not white noise). The autocorrelation in the residuals does appear small for most lags, given how similar the various models are this is likely the best fit we can obtain from the $\text{SARIMA}(p,d,q)(P,1,Q)_{7}$ modeling procedure.
+\newline
+
+```{r Fig6, echo=FALSE, warning=F}
+# Residual diagnostics for the ARMA(2,2) model
+models %>%
+  select('SARIMA(1,0,2)(1,1,2)[7]') %>%
+  gg_tsresiduals()+
+  ggtitle('Residual Diagnostic Plots')+
+  ylab("Residual")
+
+# Compute the test statistic(s) for the Box-Ljung test and plot them
+box_ljung_table = tibble(h = seq(5, 20),
+                         lb_stat = rep(0, 16),
+                         lb_pvalue = rep(0, 16))
+
+for(i in (1:nrow(box_ljung_table))) {
+  calc = models %>%
+    select('SARIMA(1,0,2)(1,1,2)[7]') %>%
+    augment() %>%
+    features(.resid, ljung_box, lag = as.numeric(box_ljung_table[i, 'h']))
+  
+  box_ljung_table[i,'lb_stat'] = calc[1,'lb_stat']
+  box_ljung_table[i,'lb_pvalue'] = calc[1,'lb_pvalue']
+}
+
+ggplot(box_ljung_table, aes(x = h, y = lb_pvalue)) +
+  geom_point(pch = 1) +
+  geom_hline(yintercept = 0.05, color = 'blue', linetype = 'dashed') +
+  coord_cartesian(ylim = c(0,1)) +  
+  labs(y = 'p-values', x = 'Lags (H)', title = 'P-values for the Box-Ljung Statistic', 
+       caption = 'Figure 6: Diagnostic Plots')
+```
+
+
+Figure 7 plots the inverse AR and MA roots of our SARIMA model. A causal invertible model should have all the roots outside the unit circle. Equivalently, the inverse roots should lie inside the unit circle (shown in red). Furthermore, there doesn't appear to be any parameter redundancy, since none of the roots are close to each other.
+
+
+```{r roots, echo = F}
+# checking for roots
+models %>%
+  select('SARIMA(1,0,2)(1,1,2)[7]') %>%
+  gg_arma()+
+  labs(title="Inverse AR and MA Roots",caption = "Figure 7: Inverse Roots")
+```
+
+Fitted values of the $\text{SARIMA}(1,0,2)(1,1,2)_{7}$ model are transformed to the original scale in order to obtain a fitted plot as seen in Figure 8. The fit of the $\text{SARIMA}(1,0,2)(1,1,2)_{7}$ model (blue) is plotted on top of the number of unique visits (black). 
+\newline
+
+```{r Fig7, echo=F, message=FALSE, results='hide', warning=FALSE}
+# See the detailed summary for the model specifications
+arima_mdl_details = models %>%
+  report() %>%
+  filter(.model == 'SARIMA(1,0,2)(1,1,2)[7]')
+
+# Plot the fitted versus actual values
+fit_data = models %>%
+  augment() %>%
+  filter(.model == 'SARIMA(1,0,2)(1,1,2)[7]') %>%
+  select(Date, actual = annual_diff, fit = .fitted)
+
+# Back-transformation the data to the original scale
+dta = tsibble(train,
+              fit = fit_data$fit,
+              index = Date) 
+
+dta = dta %>%
+  mutate(back_fit = fit + annual_lag)
+
+ggplot(dta, aes(x = Date)) +
+  geom_point(aes(y = UniqueVisits), color = 'black') +
+  geom_line(aes(y = back_fit), color = '#437cb5', alpha= 0.8) +
+  labs(x = 'Date', y = 'Unique visits',
+       title = 'Fitted SARIMA(1,0,2)(1,1,2)[7] Model',
+       caption = 'Figure 8: Fitted model (blue) vs Unique Visits (black) using training set')
+```
+
+@fpp3 note that seasonal differencing of high order does not make a lot of sense. Seasonal versions of ARIMA models are designed for shorter seasonal periods such as s = 12 for monthly data or s = 4 for quarterly data. The `Arima()` and `auto.arima()` functions only allow for a seasonal period up to m = 350, but in practice will usually run out of memory whenever the seasonal period is more than about 200. We attempted to work around these issues using the annually differenced time series $\{\tilde{x}_t\}$ and then using the smaller order of seasonal differencing. Our initial results from the ARIMA family of models produced reasonable results, but other models that explicitly handle complex seasonality were considered. We decided to run the Facebook Prophet model, in addition to dynamic harmonic regression models, which are in theory better at handling this type of seasonality.
+
+
+## Facebook Prophet
+
+Prophet is a forecasting tool developed by @prophet that is based on an additive regression model with three parts as described in (6).
+
+\begin{equation}
+y(t)=g(t)+s(t)+h(t)+\epsilon_t
+\end{equation}
+
+where $g(t)$ is the trend function, $s(t)$ is the seasonality function, and $h(t)$ models holiday effect. The authors state that it is designed for data that have strong seasonal effects and/or multiple seasonalities, making it very amenable to our dataset. 
+
+## Dynamic Harmonic Regression
+
+When a time series exhibits complex seasonality, it is common to model the seasonal component using fourier terms. Dynamic Harmonic Regression (DHR) is based on the principal that a combination of sine and cosine functions can approximate any periodic function. We use a harmonic regression approach where the seasonal patterns are modeled by fourier terms and short-term dynamics are handled by an ARMA error. Thus, the model allows for multiple seasonal components of any length by including fourier terms of different frequencies as can be seen in our proposed model (7).
+
+\begin{equation}
+y_t=\beta_0+s_7(t)+s_{365}(t)+\epsilon_t
+\end{equation}
+
+where
+
+$$s_7(t)=\sum_{i=1}^3\Bigg[\alpha_i\sin \Bigg( \frac{2\pi it}{7} \Bigg) + \beta_i\cos \Bigg( \frac{2\pi it}{7} \Bigg) \Bigg]$$
+
+$$s_{365}(t)=\sum_{i=1}^{10} \Bigg[ \gamma_i\sin \Bigg( \frac{2\pi it}{365} \Bigg)+\delta_l\cos \Bigg(\frac{2\pi it}{365} \Bigg) \Bigg]$$
+\newline
+
+and where $\epsilon_t$ is modeled as a non-seasonal ARIMA process. Usually, the number of fourier terms is determined by an iterative approach that minimizes some model selection criterion, such as AIC. However, @prophet note that using 3 fourier terms for weekly seasonality, and 10 for annual seasonality works well for most problems. For computational reasons, we decided follow this guideline by picking the number of fourier terms in advance rather than by treating it as a hyperparameter.
+
+```{r dhr, echo=F}
+dhrFit <- train %>%
+  model(
+    'Dynamic Harmonic Regression' = ARIMA(UniqueVisits ~ PDQ(0, 0, 0) + pdq(d = 0) +
+                  fourier(period = 365, K = 10) +
+                  fourier(period = 7, K = 3)))
+
+dhrFc <- dhrFit %>% forecast(h = 341)
+```
+
+
+# Results  
+
+```{r forecast, echo=F, message = F, warning = F, error = F}
+# Plot the predictions for the transformed series
+arima_forecasts = models %>%
+  forecast(h = '341 days')
+
+prophet_model = train %>%
+  model(Prophet = prophet(UniqueVisits))
+
+prophet_forecast = prophet_model %>%
+  forecast(h = '341 days')
+
+# Get the point and interval estimates for the forecast(s)
+arima_data = arima_forecasts %>%
+  hilo() %>%
+  unpack_hilo(c(`80%`,`95%`)) %>%
+  select(lower95 = `95%_lower`,
+         lower80 = `80%_lower`,
+         prediction = .mean,
+         upper80 = `80%_upper`,
+         upper95 = `95%_upper`)
+
+prophet_data = prophet_forecast %>%
+  hilo() %>%
+  unpack_hilo(c(`80%`,`95%`)) %>%
+  select(lower95 = `95%_lower`,
+         lower80 = `80%_lower`,
+         prediction = .mean,
+         upper80 = `80%_upper`,
+         upper95 = `95%_upper`)
+
+arima_data = left_join(arima_data,
+                       test) %>%
+  # Back-transformations to get the ARIMA model results to the original scale
+  mutate(back_pred = prediction + annual_lag,
+         back_lower95 = lower95 + annual_lag,
+         back_upper95 = upper95 + annual_lag,
+         check = diff + annual_lag)
+
+# Computes the accuracy measures for the back-transformed data
+# ACCURACY MEASURES ARE THE SAME FOR BOTH TRANSFORMED AND UNTRANSFORMED TIME SERIES!!!
+arima_data %>%
+  select(.model, Date, UniqueVisits, back_pred) %>% 
+  mutate(forecast_error = UniqueVisits - back_pred,
+         percent_error = 100 * (forecast_error/UniqueVisits)) %>%
+  as_tibble() %>%
+  group_by(.model) %>%
+  summarise(ME = mean(forecast_error, na.rm = T),           # the na.rm argument will not include the training records
+           RMSE = sqrt(mean(forecast_error^2, na.rm = T)),
+           MAE = mean(abs(forecast_error), na.rm = T),
+           MPE = mean(percent_error, na.rm = T),
+           MAPE = mean(abs(percent_error), na.rm = T))
+``` 
+
+All the above models were trained on a training set, and the predictive accuracy was then evaluated on a test set. The training set consists of page visits starting from `r min(train$Date)` until `r max(train$Date)`, and test set contains the data from `r min(test$Date)` to `r max(test$Date)`, making up the last `r nrow(test)` observations of the data. Our primary evaluation metrics for model comparison are the root mean squared error (RMSE) and mean absolute error (MAE), which both have the advantage of being measured on the same scale as the data (i.e., the number of website visits). Using these are our primary accuracy measures gives us more interpretable results. For clarification, the RMSE and MAE are defined as  
+
+\begin{equation}
+ RMSE = \sqrt{ \Bigg( \frac{1}{n}\sum_{i = 1}^{n} (y_i - \hat{y}_i)^2 \Bigg) }  
+\end{equation}
+
+\begin{equation}
+MAE=\frac{1}{n}\sum_{i=1}^{n}|y_i-\hat y_i|
+\end{equation}
+
+In addition to these accuracy measures, we use a common-sense baseline as a sanity check, which serves as a benchmark for more advanced time series models. Given daily data with annual seasonality, our common-sense baseline is to predict the number of unique visits at time t to be equal to the number of unique visits at t-365. In other words, a random walk model making a constant prediction with annual seasonality, which is known as a seasonal naive model (10).
+
+\begin{equation}
+\hat x_t = x_{t-365}
+\end{equation}
+
+Table 2 and Figure 9 summarize the performance results of our models on the test set. All models outperformed the seasonal naive baseline as measured by MAE and RMSE. Overall, the $\text{SARIMA}(1,0,2)(1,1,2)_{7}$ model performed the best, having the lowest MAE and RMSE.
+ 
+
+
+```{r, echo = F}
+# Shows various measures of accuracy in the point estimates for the forecast
+accuracy(arima_forecasts, web) %>%
+  filter(.model %in% c("SARIMA(1,0,2)(1,1,2)[7]",
+                     "SARIMA(1,0,2)(0,1,2)[7]",
+                     "SARIMA(1,0,2)(1,1,1)[7]",
+                     "Seasonal Naive"))%>%
+  add_row(accuracy(prophet_forecast, web)) %>%
+  add_row(accuracy(dhrFc, web)) %>%
+  select(-.type, -ACF1, -ME, -MPE, -MASE, -RMSSE, -MAPE) %>%
+  arrange(MAE) %>%
+  rename(Model = .model)%>%
+  kable(digits=2, caption = "Model errors on test set.")%>%
+  kable_styling(font_size = 12, latex_options = "hold_position")%>%
+  row_spec(0, bold = TRUE)%>%
+  kableExtra::pack_rows("Baseline", 6,6 )%>%
+  kableExtra::pack_rows("Top 3 SARIMA", 1,3 )
+```
+
+```{r mae_plot, echo = F, fig.width= 5, fig.height=3.5, fig.align='center'}
+accuracy(arima_forecasts, web) %>%
+  add_row(accuracy(prophet_forecast, web)) %>%
+  add_row(accuracy(dhrFc, web)) %>%
+  select(.model, MAE) %>%
+  rename(Model = .model) %>%
+  filter(Model %in% c("SARIMA(1,0,2)(1,1,2)[7]",
+                    "Seasonal Naive", "Prophet", "Dynamic Harmonic Regression"))%>%
+  pivot_longer(MAE, names_to = 'Metric', values_to = 'Value')%>%
+  ggplot(aes(x = factor(Model, levels= c("SARIMA(1,0,2)(1,1,2)[7]",
+                                         "Dynamic Harmonic Regression",
+                                         "Prophet","Seasonal Naive")), 
+             y = Value, fill= Model)) +
+  geom_col() +
+  geom_hline(yintercept = 302, linetype = 2, color = '#437cb5')+
+  labs(caption = 'Figure 9: Test error by model type', title = "Test Error by Model Type")+
+  xlab(NULL)+
+  ylab("MAE")+
+  scale_fill_manual(values = c("grey60",'grey60', '#437cb5','grey60'))+
+  theme(legend.position = "none", text=element_text(family = 'cm',size=13))+
+  scale_x_discrete(labels=c('SARIMA(1,0,2)(1,1,2)[7]'="SARIMA", 
+                            'Dynamic Harmonic Regression'="DHR", 
+                            'Seasonal Naive'="Baseline"))+
+  scale_y_continuous(limits = c(0,510), expand = c(0,0))
+```
+
+Figure 10 plots daily forecasts of our best performing model ($\text{SARIMA}(1,0,2)(1,1,2)_{7}$) on the test set.
+\newline
+
+
+```{r echo = F}
+# Plot the forecasts
+ggplot(data = arima_data %>% filter(.model == 'SARIMA(1,0,2)(1,1,2)[7]'), aes(x = Date)) +
+  geom_line(aes(y = back_pred), color='#437cb5') +
+  geom_point(aes(y = UniqueVisits), size = 1, alpha=0.5,color = 'black') +
+  # Add in the training data to show the historical data
+  geom_line(data = train, mapping = aes(x = Date, y = UniqueVisits)) +
+  coord_cartesian(xlim = c(as.Date('2019-07-14'), as.Date('2020-09-01'))) +
+  labs(x = 'Date', y = 'Unique visits',
+       title = 'SARIMA Forecast on Test Set',
+       caption = 'Figure 10: Forecast (blue) vs Unique Visits (black) on the test set')
+
+``` 
+\newline
+
+Finally, we are interested in making a forecast for the daily number of unique website visits over the next 30 days. Figure 11 shows such a 30-day forecast in blue, which has been generated using our best performing model. Table 13 uses the same forecast and displays the values for the first 7 days.
+\newline
+
+
+```{r, include = F, eval=F}
+sarima(web$diff, p = 1, d = 0, q = 2, P = 2, D = 0, Q = 2, S = 7, no.constant = T)
+sarima.for(web$diff, p = 1, d = 0, q = 2, P = 2, D = 0, Q = 2, S = 7, no.constant = T, n.ahead = 120)
+```
+
+```{r final-forecast, echo = F}
+# Select and fit the final model with all the available data
+final_model = web %>%
+  model('SARIMA(1,0,2)(1,1,2)[7]' = ARIMA(annual_diff ~ 0 + pdq(1,0,2) + PDQ(1,1,2, period = 7)))
+
+
+# Select the forecast horizon in days (the rest of this code chunk is automated to update with the horizon)
+h = 30
+
+# Forecast the final model
+final_data = final_model %>%
+  
+  select('SARIMA(1,0,2)(1,1,2)[7]') %>%
+  
+  forecast(h = paste(h, 'days')) %>%
+  
+  hilo() %>%
+  
+  unpack_hilo(c(`80%`,`95%`)) %>%
+  
+  select(lower95 = `95%_lower`,
+         lower80 = `80%_lower`,
+         annual_diff = .mean,
+         upper80 = `80%_upper`,
+         upper95 = `95%_upper`) %>%
+  
+  add_column(UniqueVisits = NA, weekly_lag = NA, annual_lag = NA, total_lag = NA) %>%
+  
+  # Append the original data to the beginning of the forecast data to get lagged values
+  add_row(web %>% select(UniqueVisits, annual_diff, Date, weekly_lag, annual_lag, total_lag), .before = T) %>%
+  
+  # Get the lagged values to do the back-transformations
+  mutate(weekly_lag = if_else(is.na(weekly_lag), lag(UniqueVisits, 7), weekly_lag),
+         annual_lag = if_else(is.na(annual_lag), lag(UniqueVisits, n = 365), annual_lag),
+         total_lag = if_else(is.na(total_lag), lag(lag(UniqueVisits, n = 365), n = 7), total_lag),
+         back_pred = annual_diff + annual_lag,
+         back_lower95 = lower95 + annual_lag,
+         back_upper95 = upper95 + annual_lag)
+
+# Have to iteratively compute the back-transformations since we have to use some of the forecast to compute the future forecast
+for ( i in (length(final_data$weekly_lag) - h):length(final_data$weekly_lag) ) {
+  final_data$weekly_lag[i] = final_data$back_pred[i-7]
+  final_data$annual_lag[i] = final_data$back_pred[i-365]
+  final_data$total_lag[i] = final_data$back_pred[i-372]
+  final_data$back_pred[i] = final_data$annual_diff[i] + final_data$annual_lag[i]
+  final_data$back_lower95[i] = final_data$lower95[i] + final_data$annual_lag[i]
+  final_data$back_upper95[i] = final_data$upper95[i] + final_data$annual_lag[i]
+}
+
+ggplot(data = final_data, aes(x = Date)) +
+  geom_ribbon(aes(ymin = back_lower95, ymax = back_upper95), 
+              linetype = 'dashed', alpha = 0.5,
+              fill = '#437cb5', color = '#437cb5') +
+  geom_line(aes(y = back_pred)) +
+  geom_point(data = final_data %>% filter(Date > max(web$Date)),
+              aes(x = Date, y = back_pred), alpha = 0.5, color = 'darkred') +
+  geom_line(data = final_data %>% filter(Date > max(web$Date)),
+              aes(x = Date, y = back_pred), color = '#437cb5', size=2)+
+  geom_line(data = web, aes(x = Date, y = UniqueVisits), alpha=0.5,size=1,color = 'black') +
+  coord_cartesian(xlim = c(as.Date(max(web$Date)-10), max(web$Date)+h)) +
+  labs(x = 'Date', y = 'Unique Visits', title = '30-Day Forecast of Unique Website Visits', caption = "Figure 11: 30-day forecast (blue)")+
+  scale_x_date(breaks = "days", date_labels = "%m/%d")+
+  theme(axis.text.x = element_text(angle = 60, hjust=1))
+```
+
+```{r echo = F}
+# Produce a table of the forecast
+final_data %>%
+  filter(Date > max(web$Date)) %>%
+  head(7)%>%
+  select(Date, back_lower95, back_pred, back_upper95) %>%
+  kable(col.names = c('Date', 'Lower 95% CI', 'Forecast','Upper 95% CI'),
+        digits = 0, caption = "Sample of 30-day forecast of page visits.")%>%
+  kable_styling(font_size = 12)%>%
+  row_spec(0, bold = TRUE)
+```
+
+# Conclusion  
+
+In this analysis we developed and compared different time series models for the task of predicting unique page visits to an academic website. Despite the complex seasonality inherent in the data, the best performing model was a $\text{SARIMA}(1,0,2)(1,1,2)_{7}$ model with an MAE of 302 page visits per day. Provided that a forecast with this error meets the requirements of the website owner, this model could be implemented to predict future trends and better understand user behavior. Furthermore, this model could provide valuable insights for load balancing if necessary.
+
+One major constraint of this analysis is that we only used a univariate time series to make forecasts. Future research can be done to improve model performance by including additional features, as well as recording more data. Furthermore, additional model architectures, such as modifications to SARIMAX models to handle complex seasonality, vector autoregression (VAR), and hierarchical models, can be explored to better understand the relationship between different factors and their effects on forecasting daily web traffic.
+
+\newpage
+
+# References
+
+
